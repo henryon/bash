@@ -1,0 +1,71 @@
+Start and Configure instance
+Start Instance with ami-aa2ab5bd with Instance type r3.4xlarge or r3.8xlarge on AWS Console UI.
+
+Bind EIP with new instance,reboot instance. meanwhile, refresh security-group via ansible-playbook
+
+ansible-playbook playbook/security-group.yml
+
+Add DNS CNAME to godaddy via API 
+install godaddy api  on your PC.
+
+pip install godaddypy
+
+Run below command under python
+
+from godaddypy import Client, Account
+my_acct = Account(api_key='FROM-LASTPASS', api_secret='FROM-LASTPASS')
+client = Client(my_acct)
+#client.get_domains()
+client.add_record('everstring.com', {'data':'Instance-Public DNS','name':'computeX.prod','ttl':3600, 'type':'CNAME'})
+Login new instance, change /etc/sysconfig/network file.restart server
+#HOSTNAME= to HOSTNAME=computeX.test.com
+Update cluster host configuration
+Login master01.test.com modify /etc/hosts by adding like below
+10.50.0.77 compute06.test.com
+Then, run below as root
+#make sure the master01.test.com can login computeX.prod.eversting.com with passwordless.
+ssh -o StrictHostKeyChecking=no computeX.test.com
+#run below on master01.test.com
+awk '/test.com/{print $2}' /etc/hosts > allnodes
+pscp -h allnodes /etc/hosts /etc/hosts
+ 
+Add new instance to HDP Cluster
+Note Please replace the PASSWORD and computeX as actual value.make sure the security group refresh is done before run this step
+Login ComputeX.test.com restart ambari-agent. 
+Then, run below command on your local PC.
+# add host to cluster
+curl -u admin:PASSWORD -i -H "X-Requested-By: ambari" -X POST http://master01.test.com:8080/api/v1/clusters/prod/hosts/computeX.test.com
+# add component
+curl -i -uadmin:PASSWORD -H 'X-Requested-By: ambari' -X POST -d '
+{
+"RequestInfo":{
+"query":"Hosts/host_name.in(computeX.test.com)"
+},
+"Body":{
+"host_components":[
+{
+"HostRoles":{
+"component_name":"NODEMANAGER"
+}
+},
+{
+"HostRoles":{
+"component_name":"HDFS_CLIENT"
+}
+},
+{
+"HostRoles":{
+"component_name":"YARN_CLIENT"
+}
+}
+]
+}
+}' http://master01.test.com:8080/api/v1/clusters/prod/hosts
+# Install Components and get the task ID
+curl -i -uadmin:PASSWORD -H 'X-Requested-By: ambari' -X PUT -d '
+{ "HostRoles": { "state":"INSTALLED" } }
+' http://master01.test.com:8080/api/v1/clusters/prod/host_components?HostRoles/state=INIT
+# query the task status
+a=`curl -i -uadmin:PASSWORD -i -X GET http://master01.test.com:8080/api/v1/clusters/prod/requests/<TASKID> 2>/dev/null|awk -F: '/progress_percent/{sub(/\,/,"",$2);print $2}'`
+# when get the task done, start the Node Manager
+curl -uadmin:PASSWORD -i -H 'X-Requested-By: ambari' -X PUT -d '{"HostRoles": {"state": "STARTED"}}' http://master01.test.com:8080/api/v1/clusters/prod/hosts/ComputeX.test.com/host_components/NODEMANAGER
